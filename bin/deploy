@@ -59,15 +59,25 @@ if [ -z "${DEPLOY_PULLED:-}" ]; then
     DEPLOY_PULLED=1 exec "$self"
 fi
 
+# Buildx attaches an attestation to each image by default, which on Docker's
+# containerd image store gives even a no-change build a new image ID. Some Compose
+# versions recreate the container for that, interrupting running agents.
+export BUILDX_NO_DEFAULT_ATTESTATIONS=1
+
 docker compose build --pull
 
-# --wait turns a container that never becomes healthy into a failed deploy. Its
-# logs are deliberately not printed: T3 writes a live pairing token to them at
-# startup, and this output ends up in the Actions log.
-if ! docker compose up -d --wait --wait-timeout "$HEALTHY_TIMEOUT_SECONDS" --remove-orphans; then
+# The container's logs are deliberately not printed: T3 writes a live pairing token
+# to them at startup, and this output ends up in the Actions log.
+fail_unhealthy() {
     echo "container did not become healthy — check 'docker logs t3-code' on the server" >&2
     exit 1
-fi
+}
+
+docker compose up -d --wait --wait-timeout "$HEALTHY_TIMEOUT_SECONDS" --remove-orphans || fail_unhealthy
+
+# Read separately because, under load, Compose 5.1.3 can exit 0 when --wait-timeout
+# runs out, and a broken release must not report success.
+[ "$(docker compose ps --format '{{.Health}}' t3)" = healthy ] || fail_unhealthy
 
 version=$(docker compose exec -T t3 t3 --version)
 echo "deployed $(git rev-parse --short HEAD), running $version"

@@ -66,6 +66,9 @@ install_fake_docker() {
     cat > /usr/local/bin/docker <<'EOF'
 #!/bin/sh
 echo "$*" >> /tmp/docker-calls
+case "$*" in
+    "compose ps"*) echo healthy ;;
+esac
 EOF
     chmod +x /usr/local/bin/docker
 }

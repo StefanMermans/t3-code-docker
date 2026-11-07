@@ -14,6 +14,9 @@ root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 # shellcheck source=SCRIPTDIR/lib.sh
 source "$root/tests/lib.sh"
 
+# Builds the way bin/deploy does, which explains why this is set.
+export BUILDX_NO_DEFAULT_ATTESTATIONS=1
+
 compose() {
     docker compose -p t3-code-test -f "$root/compose.yml" -f "$root/tests/compose.test.yml" "$@"
 }
@@ -72,6 +75,7 @@ echo "upgrade to $pinned_version"
 compose build --quiet --pull
 compose up -d --wait --wait-timeout 120
 assert_eq "turns healthy again" healthy "$(health)"
+assert_eq "bin/deploy can read that health" healthy "$(compose ps --format '{{.Health}}' t3)"
 assert_eq "runs the pinned release" "t3 v$pinned_version" "$(running_version)"
 assert_contains "runs the pinned codex" "$(in_container codex --version)" "$pinned_codex"
 
@@ -105,10 +109,13 @@ assert_succeeds "the t3 user can use it" in_container jq --version
 compose up -d --wait --wait-timeout 120 --force-recreate
 assert_fails "it is gone once the container is replaced" in_container sh -c 'command -v jq'
 
-# Against real Compose, because the deploy's only failure signal is this exit code
-# and the README describes what these two cases leave behind.
+# Against real Compose, because bin/deploy relies on what it reports and the README
+# describes what these two cases leave behind.
 echo "a new container that runs but never passes its health check"
-assert_fails "fails up --wait" compose -f "$root/tests/compose.unhealthy.yml" up -d --wait --wait-timeout 5
+# The exit code isn't asserted: under load, Compose 5.1.3 can exit 0 when
+# --wait-timeout runs out, which is why bin/deploy reads the health itself.
+compose -f "$root/tests/compose.unhealthy.yml" up -d --wait --wait-timeout 5 >/dev/null 2>&1 || true
+assert_fails "does not read as healthy" test "$(compose ps --format '{{.Health}}' t3)" = healthy
 assert_eq "is left running" running "$(container_status)"
 assert_succeeds "and still answers" environment_json
 

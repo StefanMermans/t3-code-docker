@@ -18,11 +18,17 @@ mkdir "$work/fake-bin"
 cat > "$work/fake-bin/docker" <<'EOF'
 #!/usr/bin/env bash
 echo "$*" >> "$DOCKER_CALLS"
+if [[ "$*" == "compose build"* ]]; then
+    echo "${BUILDX_NO_DEFAULT_ATTESTATIONS:-unset}" > "$DOCKER_CALLS.attestations-off"
+fi
 if [ -n "${DOCKER_FAILS_ON:-}" ] && [[ "$*" == "$DOCKER_FAILS_ON"* ]]; then
     exit 1
 fi
 if [[ "$*" == *"--version"* ]]; then
     echo "t3 v9.9.9"
+fi
+if [[ "$*" == "compose ps"* ]]; then
+    echo "${DOCKER_HEALTH-healthy}"
 fi
 EOF
 chmod +x "$work/fake-bin/docker"
@@ -43,7 +49,7 @@ new_fixture() {
     app="$fixture/app"
     export DOCKER_CALLS="$fixture/docker-calls"
     : > "$DOCKER_CALLS"
-    unset DOCKER_FAILS_ON
+    unset DOCKER_FAILS_ON DOCKER_HEALTH
 
     git init -q --bare -b master "$origin"
     git init -q -b master "$seed"
@@ -82,8 +88,10 @@ assert_eq "checkout reaches origin/master" \
 assert_eq "builds, waits for healthy, reports the version" \
     "compose build --pull
 compose up -d --wait --wait-timeout 120 --remove-orphans
+compose ps --format {{.Health}} t3
 compose exec -T t3 t3 --version" "$(docker_calls)"
 assert_contains "reports what is running" "$output" "running t3 v9.9.9"
+assert_eq "builds without default attestations" 1 "$(cat "$DOCKER_CALLS.attestations-off")"
 
 echo "a pulled change to the script itself takes effect immediately"
 new_fixture
@@ -217,6 +225,16 @@ run_deploy
 assert_eq "exits 1" 1 "$status"
 assert_contains "says where to look" "$output" "docker logs t3-code"
 assert_not_contains "never prints logs, they hold a pairing token" "$(docker_calls)" "logs"
+
+for health in starting unhealthy ""; do
+    echo "Compose reports success but the container's health is '$health'"
+    new_fixture
+    export DOCKER_HEALTH=$health
+    run_deploy
+    assert_eq "exits 1" 1 "$status"
+    assert_contains "says where to look" "$output" "docker logs t3-code"
+    assert_not_contains "does not report success" "$output" "deployed"
+done
 
 echo "a failed version check fails the deploy"
 new_fixture
