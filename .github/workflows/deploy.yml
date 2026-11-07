@@ -26,6 +26,7 @@ jobs:
     needs: check
     if: github.ref == 'refs/heads/master'
     runs-on: ubuntu-latest
+    environment: Production
     timeout-minutes: 20
     # Queued rather than cancelled, so a merge never kills a deploy partway.
     concurrency:

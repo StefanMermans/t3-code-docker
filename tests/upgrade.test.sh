@@ -43,8 +43,11 @@ echo "published port"
 host_ips=$(docker compose -f "$root/compose.yml" config --format json | jq -c '[.services[].ports[]?.host_ip]')
 assert_eq "compose.yml publishes on loopback and nowhere else" '["127.0.0.1"]' "$host_ips"
 
+# --pull on every build, as bin/deploy does. On Docker's classic image store, going
+# from a plain build to a --pull build changes the image ID once, which recreates
+# the container and says nothing about a real deploy.
 echo "first deploy, at $PREVIOUS_VERSION"
-compose build --quiet --build-arg "T3CODE_VERSION=$PREVIOUS_VERSION"
+compose build --quiet --pull --build-arg "T3CODE_VERSION=$PREVIOUS_VERSION"
 compose up -d --wait --wait-timeout 120
 assert_eq "turns healthy" healthy "$(health)"
 assert_eq "runs the previous release" "t3 v$PREVIOUS_VERSION" "$(running_version)"
@@ -66,7 +69,7 @@ in_container sh -c '
 '
 
 echo "upgrade to $pinned_version"
-compose build --quiet
+compose build --quiet --pull
 compose up -d --wait --wait-timeout 120
 assert_eq "turns healthy again" healthy "$(health)"
 assert_eq "runs the pinned release" "t3 v$pinned_version" "$(running_version)"

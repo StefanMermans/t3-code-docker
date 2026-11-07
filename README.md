@@ -70,9 +70,11 @@ never picks up a new release. Pinned, every upgrade is a commit you can revert.
 
 ## Setup
 
-Define a service named `t3` on `tcp:443` in the Tailscale admin console, then run
-this from a clone on your Mac. Use the same public host and port that speed-dial's
-`SSH_HOST` and `SSH_PORT` secrets hold.
+Define a service named `t3` on `tcp:443` in the Tailscale admin console. Then run
+this from a clone on your Mac, creating an environment named `Production` limited to
+the `master` branch in the repository settings before the first `gh secret set`. Use
+the same public host and port that speed-dial's `SSH_HOST` and `SSH_PORT` secrets
+hold. Environment secrets on a private repository need a paid GitHub plan.
 
 ```bash
 git init -b master
@@ -82,10 +84,11 @@ gh repo create StefanMermans/t3-code-docker --private --source . --push
 
 keys=$(mktemp -d)
 ssh-keygen -q -t ed25519 -N '' -C github-actions@t3-code-docker -f "$keys/ci"
-gh secret set SSH_PRIVATE_KEY < "$keys/ci"
-gh secret set SSH_HOST --body '<public host>'
-gh secret set SSH_PORT --body '<public port>'
-ssh-keyscan -t ed25519 stefanserver | grep -v '^#' | cut -d' ' -f2- | gh secret set SSH_HOST_KEY
+gh secret set SSH_PRIVATE_KEY --env Production < "$keys/ci"
+gh secret set SSH_HOST --env Production --body '<public host>'
+gh secret set SSH_PORT --env Production --body '<public port>'
+ssh-keyscan -t ed25519 stefanserver | grep -v '^#' | cut -d' ' -f2- \
+  | gh secret set SSH_HOST_KEY --env Production
 
 scp bin/setup-server stefan@stefanserver:/tmp/
 ssh -t stefan@stefanserver "sudo bash /tmp/setup-server '$(cat "$keys/ci.pub")'"
