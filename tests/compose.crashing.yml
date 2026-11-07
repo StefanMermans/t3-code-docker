@@ -1,0 +1,5 @@
+# A container whose process exits as soon as it starts.
+services:
+  t3:
+    entrypoint: ["false"]
+    command: []

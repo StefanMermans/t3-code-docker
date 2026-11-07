@@ -1,0 +1,121 @@
+#!/usr/bin/env bash
+#
+# One-time server setup. Run as root; safe to re-run.
+#
+#   setup-server '<public half of the CI key>'
+#
+# The first run stops after printing a GitHub deploy key, because the server
+# can't clone the repository until that key is added. Add it and run this again.
+set -euo pipefail
+
+readonly DEPLOY_USER=deployer
+readonly APP=t3-code-docker
+readonly APP_DIR="/var/www/$APP"
+readonly APP_PORT=3773
+readonly GITHUB_ALIAS="github.com-$APP"
+readonly GITHUB_REPO="StefanMermans/$APP"
+readonly TAILSCALE_SERVICE=svc:t3
+readonly PUBLIC_KEY_PATTERN='^ssh-[a-z0-9-]+ [A-Za-z0-9+/=]+( [[:print:]]+)?$'
+# Overridable so the tests can stand in a local repository for GitHub.
+readonly REPO_URL="${T3_REPO_URL:-git@$GITHUB_ALIAS:$GITHUB_REPO.git}"
+
+die() {
+    echo "setup-server: $*" >&2
+    exit 1
+}
+
+as_deployer() { runuser -u "$DEPLOY_USER" -- "$@"; }
+
+# Creates the file if needed and makes sure an append starts on a fresh line: a
+# last line with no newline would merge with ours and break both.
+prepare_for_append() {
+    local file=$1
+    [ -e "$file" ] || install -m 600 -o "$DEPLOY_USER" -g "$DEPLOY_USER" /dev/null "$file"
+    [ -z "$(tail -c1 "$file")" ] || echo >> "$file"
+}
+
+configure_github_access() {
+    local ssh_dir=$1 key="$1/$APP-github" config="$1/config"
+
+    [ -e "$key" ] || as_deployer ssh-keygen -q -t ed25519 -N '' -C "$DEPLOY_USER@$(hostname):$APP" -f "$key"
+
+    prepare_for_append "$config"
+    grep -qxF "Host $GITHUB_ALIAS" "$config" || cat >> "$config" <<EOF
+Host $GITHUB_ALIAS
+    HostName github.com
+    User git
+    IdentityFile $key
+    IdentitiesOnly yes
+    BatchMode yes
+    StrictHostKeyChecking accept-new
+EOF
+}
+
+require_repo_access() {
+    local public_key_file=$1
+
+    as_deployer git ls-remote "$REPO_URL" >/dev/null && return
+
+    cat >&2 <<EOF
+
+The server can't read $REPO_URL yet. Add its deploy key from your Mac:
+
+  echo '$(cat "$public_key_file")' | gh repo deploy-key add - -R $GITHUB_REPO --title $(hostname)
+
+Then run this script again.
+EOF
+    exit 1
+}
+
+clone_repository() {
+    [ -d "$APP_DIR/.git" ] && return
+    install -d -o "$DEPLOY_USER" -g "$DEPLOY_USER" "$APP_DIR"
+    as_deployer git clone --quiet "$REPO_URL" "$APP_DIR"
+}
+
+# The forced command is what limits this key: whatever the client asks to run,
+# sshd runs the deploy instead and hands it the request to validate. restrict
+# also drops forwarding and the pty.
+authorize_ci_key() {
+    local authorized_keys="$1/authorized_keys" entry="restrict,command=\"$APP_DIR/bin/deploy\" $2"
+
+    prepare_for_append "$authorized_keys"
+    grep -qxF "$entry" "$authorized_keys" || printf '%s\n' "$entry" >> "$authorized_keys"
+}
+
+publish_on_tailnet() {
+    tailscale serve --service="$TAILSCALE_SERVICE" --https=443 "http://127.0.0.1:$APP_PORT" \
+        || die "tailscale serve failed — see its error above"
+
+    # tailscale serve exits 0 while no admin has approved this machine to host the
+    # service, and nothing can reach it until one does.
+    tailscale status --json \
+        | jq -e --arg service "$TAILSCALE_SERVICE" '.Self.CapMap["service-host"] // [] | any(has($service))' >/dev/null \
+        || die "define $TAILSCALE_SERVICE in the Tailscale admin console and approve this machine, then run this again"
+}
+
+main() {
+    [ "$EUID" -eq 0 ] || die "must run as root"
+    [ "$#" -eq 1 ] || die "usage: setup-server '<public half of the CI key>'"
+    [[ $1 =~ $PUBLIC_KEY_PATTERN ]] || die "the argument must be a single-line SSH public key"
+    id "$DEPLOY_USER" >/dev/null 2>&1 || die "user $DEPLOY_USER does not exist"
+    command -v jq >/dev/null || die "jq is required: apt install jq"
+
+    # The caller's directory is often somewhere deployer can't read, and git
+    # refuses to run from there.
+    cd /
+
+    local ssh_dir
+    ssh_dir="$(getent passwd "$DEPLOY_USER" | cut -d: -f6)/.ssh"
+    install -d -m 700 -o "$DEPLOY_USER" -g "$DEPLOY_USER" "$ssh_dir"
+
+    configure_github_access "$ssh_dir"
+    require_repo_access "$ssh_dir/$APP-github.pub"
+    clone_repository
+    authorize_ci_key "$ssh_dir" "$1"
+    publish_on_tailnet
+
+    echo "server is ready — start the first deploy with: gh workflow run deploy.yml --ref master"
+}
+
+main "$@"

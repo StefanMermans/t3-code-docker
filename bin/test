@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+#
+# Shellcheck and every test. This is what CI runs. Needs Docker.
+set -euo pipefail
+
+cd "$(dirname "$(readlink -f "$0")")/.."
+
+shellcheck -x bin/* tests/*.sh
+
+for test in tests/*.test.sh; do
+    "$test"
+done

@@ -1,0 +1,41 @@
+name: t3-code
+
+services:
+  t3:
+    build: .
+    container_name: t3-code
+    restart: unless-stopped
+
+    # Otherwise the container ID, which changes on every deploy. T3 shows this
+    # name in its apps and keys usage totals on it.
+    hostname: stefanserver
+
+    # t3 would otherwise be PID 1, and agents leave behind orphans it won't reap.
+    init: true
+
+    # Stops setuid programs from taking the unprivileged user back to root.
+    security_opt:
+      - no-new-privileges:true
+
+    # Loopback only, and reached through Tailscale Serve. A pairing grants a
+    # shell in here, and Docker-published ports bypass ufw.
+    ports:
+      - "127.0.0.1:3773:3773"
+
+    working_dir: /workspace
+
+    volumes:
+      # Never all of /var/t3/home: t3 is installed under runtime/ there, so a
+      # volume keeps the old release and hides the new one on every upgrade.
+      - userdata:/var/t3/home/userdata
+      - worktrees:/var/t3/home/worktrees
+      # Provider logins and anything installed in the home folder: ~/.codex, ~/.ssh,
+      # ~/.local, git config. System packages are not kept.
+      - home:/home/t3
+      - workspace:/workspace
+
+volumes:
+  userdata:
+  worktrees:
+  home:
+  workspace:

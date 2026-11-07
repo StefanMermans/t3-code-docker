@@ -1,0 +1,73 @@
+#!/usr/bin/env bash
+#
+# Bring the running container in line with origin/master.
+#
+# This is the forced command on the CI key, so holding that key lets you deploy
+# what is already on master and nothing else. Its one input is the commit CI
+# tested, which sshd passes in SSH_ORIGINAL_COMMAND. Run by hand, with no such
+# commit, it deploys the tip of master.
+#
+# Re-runnable. Compose reconciles, so a deploy that changes nothing restarts
+# nothing.
+set -euo pipefail
+
+readonly BRANCH=master
+readonly HEALTHY_TIMEOUT_SECONDS=120
+readonly COMMIT_SHA_PATTERN='^[0-9a-f]{40}$'
+
+self=$(readlink -f "$0")
+cd "$(dirname "$self")/.."
+
+tested_commit=${SSH_ORIGINAL_COMMAND:-}
+
+if [ -n "$tested_commit" ] && ! [[ $tested_commit =~ $COMMIT_SHA_PATTERN ]]; then
+    echo "refusing to deploy: the requested command is not a commit SHA" >&2
+    exit 1
+fi
+
+if [ -n "$(git status --porcelain)" ]; then
+    echo "working tree is dirty — commit or discard before deploying" >&2
+    git status --short >&2
+    exit 1
+fi
+
+update_checkout() {
+    local tip
+
+    git fetch --quiet origin "$BRANCH"
+    tip=$(git rev-parse FETCH_HEAD)
+
+    # Only the tip's own run may deploy it, once that commit's tests have passed.
+    if [ -n "$tested_commit" ] && [ "$tested_commit" != "$tip" ]; then
+        echo "superseded: $tested_commit is no longer the tip of $BRANCH, so this run deploys nothing"
+        exit 0
+    fi
+
+    git merge --quiet --ff-only "$tip"
+
+    # A fast-forward has nothing to do, and succeeds, when the checkout is ahead.
+    if [ "$(git rev-parse HEAD)" != "$tip" ]; then
+        echo "the checkout has commits that are not on origin/$BRANCH — remove them before deploying" >&2
+        exit 1
+    fi
+}
+
+# Bash reads a script as it runs, so updating this file would corrupt the run in
+# progress. Hand over to a fresh process running the new version.
+if [ -z "${DEPLOY_PULLED:-}" ]; then
+    update_checkout
+    DEPLOY_PULLED=1 exec "$self"
+fi
+
+docker compose build --pull
+
+# --wait turns a container that never becomes healthy into a failed deploy. Its
+# logs are deliberately not printed: T3 writes a live pairing token to them at
+# startup, and this output ends up in the Actions log.
+if ! docker compose up -d --wait --wait-timeout "$HEALTHY_TIMEOUT_SECONDS" --remove-orphans; then
+    echo "container did not become healthy — check 'docker logs t3-code' on the server" >&2
+    exit 1
+fi
+
+version=$(docker compose exec -T t3 t3 --version)
+echo "deployed $(git rev-parse --short HEAD), running $version"

@@ -1,0 +1,6 @@
+# A container whose process runs but which never passes its health check.
+services:
+  t3:
+    healthcheck:
+      test: ["CMD", "false"]
+      interval: 1s

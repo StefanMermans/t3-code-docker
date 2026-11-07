@@ -1,0 +1,6 @@
+# Lets the tests run beside a real T3 Code: another port and container name.
+services:
+  t3:
+    container_name: t3-code-test
+    ports: !override
+      - "127.0.0.1:37730:3773"
